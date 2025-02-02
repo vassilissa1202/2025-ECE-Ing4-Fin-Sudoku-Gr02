@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Référence au projet Shared contenant la classe SudokuGrid et éventuellement ISudokuSolver -->
+  <ItemGroup>
+    <ProjectReference Include="..\Sudoku.Shared\Sudoku.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- Les références aux packages Python sont supprimées puisqu'on n'utilise plus Python.
+       Si vous n'avez pas d'autres packages à ajouter, vous pouvez laisser cet ItemGroup vide. -->
+  <!--
+  <ItemGroup>
+    <PackageReference Include="Google.OrTools" Version="9.11.4210" />
+  </ItemGroup>
+  -->
+
+  <!-- Si nécessaire, ajoutez d'autres références ou scripts spécifiques ici -->
+  
+</Project>
