@@ -5,13 +5,7 @@ using Sudoku.Shared;  // Assurez-vous que SudokuGrid et ISudokuSolver se trouven
 
 namespace Sudoku.CSPAimaSolver
 {
-    // Exemple d'interface ISudokuSolver (à adapter selon votre définition)
-    // public interface ISudokuSolver
-    // {
-    //     SudokuGrid Solve(SudokuGrid grid);
-    // }
-    
-    public class CSPSolverSimple : ISudokuSolver
+    public class CSPSolver : ISudokuSolver
     {
         /// <summary>
         /// Calcule, pour chaque cellule (i,j) du Sudoku, l’ensemble des cellules voisines
@@ -110,7 +104,7 @@ namespace Sudoku.CSPAimaSolver
         /// Effectue le forward checking : on fixe la valeur 'value' pour la variable 'var' et on
         /// retire cette valeur des domaines des voisins. Si un domaine devient vide, retourne null.
         /// </summary>
-        private Dictionary<(int, int), HashSet<int>> ForwardCheck(
+        private Dictionary<(int, int), HashSet<int>>? ForwardCheck(
             Dictionary<(int, int), HashSet<int>> domains,
             (int, int) var,
             int value,
@@ -138,27 +132,96 @@ namespace Sudoku.CSPAimaSolver
         }
 
         /// <summary>
-        /// Algorithme récursif de backtracking.
-        /// Si toutes les variables ont un domaine singleton, la solution est trouvée.
-        /// Sinon, sélectionne une variable non assignée et tente chaque valeur possible avec forward checking.
+        /// Procédure AC-3 pour assurer l'arc-consistance sur l'ensemble des variables.
+        /// Retourne false si une inconsistance est détectée (domaine vide), sinon true.
         /// </summary>
-        private Dictionary<(int, int), HashSet<int>> Backtrack(
+        private bool AC3(ref Dictionary<(int, int), HashSet<int>> domains,
+                         Dictionary<(int, int), HashSet<(int, int)>> neighbors)
+        {
+            var queue = new Queue<((int, int) Xi, (int, int) Xj)>();
+
+            // Initialiser la file avec tous les arcs
+            foreach (var variable in domains.Keys)
+            {
+                foreach (var neighbor in neighbors[variable])
+                {
+                    queue.Enqueue((variable, neighbor));
+                }
+            }
+
+            while (queue.Count > 0)
+            {
+                var (Xi, Xj) = queue.Dequeue();
+                if (RemoveInconsistentValues(Xi, Xj, domains))
+                {
+                    if (domains[Xi].Count == 0)
+                        return false;
+                    // Pour chaque voisin Xk de Xi (différent de Xj), ajouter (Xk, Xi) à la file
+                    foreach (var Xk in neighbors[Xi])
+                    {
+                        if (Xk.Equals(Xj)) continue;
+                        queue.Enqueue((Xk, Xi));
+                    }
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Enlève les valeurs inconsistantes du domaine de Xi par rapport à Xj.
+        /// Retourne true si des valeurs ont été supprimées, sinon false.
+        /// </summary>
+        private bool RemoveInconsistentValues((int, int) Xi, (int, int) Xj,
+                                              Dictionary<(int, int), HashSet<int>> domains)
+        {
+            bool removed = false;
+            var toRemove = new List<int>();
+
+            foreach (int a in domains[Xi])
+            {
+                // Vérifier s'il existe une valeur b dans le domaine de Xj telle que a != b.
+                bool found = domains[Xj].Any(b => a != b);
+                if (!found)
+                {
+                    toRemove.Add(a);
+                }
+            }
+
+            foreach (int a in toRemove)
+            {
+                domains[Xi].Remove(a);
+                removed = true;
+            }
+
+            return removed;
+        }
+
+        /// <summary>
+        /// Algorithme récursif de backtracking avec AC-3.
+        /// Si toutes les variables ont un domaine singleton, la solution est trouvée.
+        /// Sinon, sélectionne une variable non assignée et tente chaque valeur possible avec forward checking et AC-3.
+        /// </summary>
+        private Dictionary<(int, int), HashSet<int>>? Backtrack(
             Dictionary<(int, int), HashSet<int>> domains,
             Dictionary<(int, int), HashSet<(int, int)>> neighbors)
         {
-            // Si toutes les cellules ont un domaine singleton, la solution est complète
+            // Si toutes les cellules ont un domaine singleton, la solution est complète.
             if (domains.All(kvp => kvp.Value.Count == 1))
                 return domains;
 
             var var = SelectUnassignedVariable(domains);
             if (var == null)
-                return null; // Théoriquement, cela ne devrait pas se produire
+                return null; // Cela ne devrait pas arriver.
 
             foreach (int val in domains[var.Value])
             {
                 var newDomains = ForwardCheck(domains, var.Value, val, neighbors);
                 if (newDomains != null)
                 {
+                    // Appliquer AC-3 pour renforcer la propagation des contraintes.
+                    if (!AC3(ref newDomains, neighbors))
+                        continue;
+
                     var result = Backtrack(newDomains, neighbors);
                     if (result != null)
                         return result;
@@ -174,7 +237,7 @@ namespace Sudoku.CSPAimaSolver
         /// </summary>
         public SudokuGrid Solve(SudokuGrid grid)
         {
-            // On suppose que grid.Cells est un tableau 9x9 d'entiers
+            // On suppose que grid.Cells est un tableau 9x9 d'entiers.
             int[,] initialGrid = grid.Cells;
             var domains = ParseGrid(initialGrid);
             var neighbors = ComputeNeighbors();
@@ -189,11 +252,11 @@ namespace Sudoku.CSPAimaSolver
                 for (int j = 0; j < 9; j++)
                 {
                     var cell = (i, j);
-                    solvedGrid[i, j] = solution[cell].First(); // Chaque domaine est singleton
+                    solvedGrid[i, j] = solution[cell].First(); // Chaque domaine est désormais singleton
                 }
             }
 
-            // Construire et retourner un nouveau SudokuGrid avec la grille résolue
+            // Construire et retourner un nouveau SudokuGrid avec la grille résolue.
             SudokuGrid resultGrid = new SudokuGrid();
             resultGrid.Cells = solvedGrid;
             return resultGrid;
