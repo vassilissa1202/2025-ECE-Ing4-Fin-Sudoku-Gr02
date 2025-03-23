@@ -1,0 +1,321 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib
+matplotlib.use('Agg')  # Utiliser un backend non-interactif
+import matplotlib.pyplot as plt
+from datetime import datetime
+import os
+
+class SimpleCFRPortfolio:
+    """
+    Implémentation simplifiée d'un optimiseur de portefeuille basé sur la minimisation de regret.
+    """
+    
+    def _init_(self, tickers, learning_rate=0.05, min_weight=0.01):
+        """
+        Initialise l'optimiseur avec les tickers des actifs à considérer.
+        
+        Parameters:
+        -----------
+        tickers : list
+            Liste des tickers des actifs à inclure dans le portefeuille
+        learning_rate : float
+            Taux d'apprentissage pour l'ajustement des poids
+        min_weight : float
+            Poids minimum pour chaque actif (pour éviter une allocation à zéro)
+        """
+        self.tickers = tickers
+        self.n_assets = len(tickers)
+        self.learning_rate = learning_rate
+        self.min_weight = min_weight
+        
+        # Initialisation des poids avec une allocation égale
+        self.weights = np.ones(self.n_assets) / self.n_assets
+        
+        # Historique pour stocker les poids, rendements et regrets
+        self.weight_history = []
+        self.return_history = []
+        self.regret_history = []
+        self.cumulative_regret = np.zeros(self.n_assets)
+        
+    def fetch_data(self, start_date, end_date):
+        """
+        Récupère les données historiques pour les actifs spécifiés.
+        """
+        print(f"Téléchargement des données pour {self.tickers} du {start_date} au {end_date}...")
+        self.data = yf.download(self.tickers, start=start_date, end=end_date, auto_adjust=True)
+        
+        # Si on a plusieurs tickers, les données sont dans un DataFrame multi-index
+        if isinstance(self.data.columns, pd.MultiIndex):
+            # Utiliser la colonne 'Close'
+            self.data = self.data['Close']
+        elif 'Close' in self.data.columns:
+            # Si un seul ticker, prendre directement la colonne Close
+            self.data = self.data['Close']
+        
+        print(f"Données téléchargées. Forme: {self.data.shape}")
+        
+        # Calculer les rendements journaliers
+        self.returns = self.data.pct_change().dropna()
+        return self.data
+    
+    def calculate_regret(self, daily_returns):
+        """
+        Calcule le regret pour chaque actif par rapport à l'allocation actuelle.
+        """
+        # Convertir en array si besoin
+        if isinstance(daily_returns, pd.Series):
+            daily_returns = daily_returns.values
+            
+        # Calcul du rendement du portefeuille avec les poids actuels
+        portfolio_return = np.dot(self.weights, daily_returns)
+        
+        # Regret = rendement que l'on aurait pu obtenir - rendement obtenu
+        regrets = daily_returns - portfolio_return
+        
+        return regrets
+    
+    def update_weights(self, regrets):
+        """
+        Met à jour les poids du portefeuille en fonction des regrets calculés.
+        """
+        # Mettre à jour le regret cumulatif
+        self.cumulative_regret += regrets
+        
+        # Calculer les nouveaux poids basés sur le regret cumulatif
+        positive_regrets = np.maximum(0, self.cumulative_regret)
+        
+        if np.sum(positive_regrets) > 0:
+            new_weights = positive_regrets / np.sum(positive_regrets)
+        else:
+            new_weights = np.ones(self.n_assets) / self.n_assets
+        
+        # Appliquer une contrainte de poids minimum
+        new_weights = np.maximum(new_weights, self.min_weight)
+        new_weights = new_weights / np.sum(new_weights)  # Renormaliser
+        
+        # Mettre à jour les poids avec un taux d'apprentissage
+        self.weights = (1 - self.learning_rate) * self.weights + self.learning_rate * new_weights
+        
+        # Assurer que la somme est exactement 1
+        self.weights = self.weights / np.sum(self.weights)
+        
+        return self.weights
+    
+    def backtest(self):
+        """
+        Exécute un backtest de la stratégie sur les données historiques.
+        """
+        if not hasattr(self, 'returns'):
+            raise ValueError("Les données n'ont pas été chargées. Utilisez fetch_data() d'abord.")
+        
+        print("Début du backtest...")
+        
+        # Réinitialiser les poids et l'historique
+        self.weights = np.ones(self.n_assets) / self.n_assets
+        self.weight_history = [self.weights.copy()]
+        self.return_history = []
+        self.regret_history = []
+        self.cumulative_regret = np.zeros(self.n_assets)
+        
+        # Stratégies de référence
+        strategies = {
+            'CFR Strategy': [],  # Notre stratégie
+            'Equal Weight': [],  # Allocation égale (rebalancée chaque jour)
+            'Buy & Hold': [],    # Allocation égale sans rebalancement
+            'Best Asset': []     # Meilleur actif a posteriori
+        }
+        
+        # Initialiser Buy & Hold avec allocation égale
+        buy_hold_weights = np.ones(self.n_assets) / self.n_assets
+        
+        # Traitement jour par jour
+        period_count = len(self.returns)
+        print(f"Traitement de {period_count} périodes...")
+        
+        for i, (date, row) in enumerate(self.returns.iterrows()):
+            if i % 100 == 0:
+                print(f"Traitement de la période {i}...")
+                
+            # Calculer le rendement du portefeuille CFR avec les poids actuels
+            cfr_return = np.dot(self.weights, row)
+            strategies['CFR Strategy'].append(cfr_return)
+            
+            # Calculer le rendement avec une allocation égale
+            equal_return = np.sum(row) / self.n_assets
+            strategies['Equal Weight'].append(equal_return)
+            
+            # Calculer le rendement Buy & Hold
+            buy_hold_return = np.dot(buy_hold_weights, row)
+            strategies['Buy & Hold'].append(buy_hold_return)
+            buy_hold_weights = buy_hold_weights * (1 + row)
+            buy_hold_weights = buy_hold_weights / np.sum(buy_hold_weights)
+            
+            # Calcul du meilleur actif (pour référence)
+            best_return = np.max(row)
+            strategies['Best Asset'].append(best_return)
+            
+            # Calculer les regrets
+            regrets = self.calculate_regret(row.values)
+            self.regret_history.append(regrets)
+            
+            # Mettre à jour les poids pour le jour suivant
+            self.update_weights(regrets)
+            self.weight_history.append(self.weights.copy())
+            self.return_history.append(cfr_return)
+        
+        print("Backtest terminé.")
+        
+        # Convertir en DataFrame pour faciliter l'analyse
+        self.weight_history_df = pd.DataFrame(
+            self.weight_history[:-1], 
+            index=self.returns.index, 
+            columns=self.tickers
+        )
+        
+        self.performance_df = pd.DataFrame(strategies, index=self.returns.index)
+        
+        # Calculer les performances cumulatives
+        self.cumulative_performance = (1 + self.performance_df).cumprod()
+        
+        return self.cumulative_performance
+    
+    def calculate_metrics(self):
+        """
+        Calcule les métriques de performance pour chaque stratégie.
+        """
+        if not hasattr(self, 'performance_df'):
+            raise ValueError("Le backtest n'a pas été exécuté. Utilisez backtest() d'abord.")
+        
+        # Facteur d'annualisation
+        annual_factor = 252  # Jours de trading dans une année
+        
+        # Créer un dictionnaire pour stocker les métriques
+        metrics = {}
+        
+        for strategy in self.performance_df.columns:
+            # Rendements journaliers
+            returns = self.performance_df[strategy]
+            
+            # Rendement cumulatif
+            cumulative_returns = self.cumulative_performance[strategy]
+            
+            # Rendement annualisé
+            total_return = cumulative_returns.iloc[-1]
+            years = len(returns) / annual_factor
+            annual_return = (total_return ** (1/years)) - 1
+            
+            # Volatilité annualisée
+            volatility = returns.std() * np.sqrt(annual_factor)
+            
+            # Ratio de Sharpe (en supposant un taux sans risque de 0%)
+            sharpe_ratio = annual_return / volatility if volatility != 0 else 0
+            
+            # Drawdown maximal
+            max_drawdown = (cumulative_returns / cumulative_returns.cummax() - 1).min()
+            
+            # Stocker les métriques
+            metrics[strategy] = {
+                'Total Return': total_return - 1,  # En pourcentage
+                'Annual Return': annual_return,
+                'Volatility': volatility,
+                'Sharpe Ratio': sharpe_ratio,
+                'Max Drawdown': max_drawdown
+            }
+        
+        # Convertir en DataFrame
+        metrics_df = pd.DataFrame(metrics)
+        
+        return metrics_df
+    
+    def save_results(self, output_dir="results"):
+        """
+        Sauvegarde les résultats du backtest dans des fichiers.
+        
+        Parameters:
+        -----------
+        output_dir : str
+            Dossier où sauvegarder les résultats
+        """
+        if not hasattr(self, 'cumulative_performance'):
+            raise ValueError("Le backtest n'a pas été exécuté. Utilisez backtest() d'abord.")
+        
+        # Créer le dossier s'il n'existe pas
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # Chemin des fichiers
+        performance_file = os.path.join(output_dir, "performance_cumulative.png")
+        weights_file = os.path.join(output_dir, "allocation_poids.png")
+        regret_file = os.path.join(output_dir, "regret_cumulatif.png")
+        metrics_file = os.path.join(output_dir, "metrics.csv")
+        weights_csv_file = os.path.join(output_dir, "weights_history.csv")
+        performance_csv_file = os.path.join(output_dir, "performance.csv")
+        
+        # 1. Sauvegarder les performances cumulatives
+        plt.figure(figsize=(12, 6))
+        self.cumulative_performance.plot()
+        plt.title('Performance Cumulative')
+        plt.ylabel('Valeur du portefeuille')
+        plt.grid(True)
+        plt.savefig(performance_file)
+        plt.close()
+        
+        # 2. Sauvegarder l'évolution des poids
+        plt.figure(figsize=(12, 6))
+        self.weight_history_df.plot.area(colormap='viridis')
+        plt.title('Évolution des Allocations')
+        plt.ylabel('Poids')
+        plt.grid(True)
+        plt.savefig(weights_file)
+        plt.close()
+        
+        # 3. Sauvegarder le regret cumulatif
+        regret_df = pd.DataFrame(self.regret_history, index=self.returns.index, columns=self.tickers)
+        cumulative_regret_df = regret_df.cumsum()
+        
+        plt.figure(figsize=(12, 6))
+        cumulative_regret_df.plot()
+        plt.title('Regret Cumulatif par Actif')
+        plt.ylabel('Regret Cumulatif')
+        plt.grid(True)
+        plt.savefig(regret_file)
+        plt.close()
+        
+        # 4. Sauvegarder les métriques
+        metrics = self.calculate_metrics()
+        metrics.to_csv(metrics_file)
+        
+        # 5. Sauvegarder l'historique des poids et des performances
+        self.weight_history_df.to_csv(weights_csv_file)
+        self.performance_df.to_csv(performance_csv_file)
+        
+        print(f"Résultats sauvegardés dans le dossier: {output_dir}")
+        print(f"Métriques de performance:")
+        print(metrics)
+        
+        # Afficher l'allocation finale
+        final_weights = self.weight_history[-1]
+        final_allocation = pd.Series(final_weights, index=self.tickers)
+        print("\nAllocation finale:")
+        print(final_allocation)
+
+# Exemple d'utilisation
+if _name_ == "_main_":
+    # Liste des actifs à considérer
+    tickers = ['SPY', 'QQQ', 'GLD', 'AGG', 'VGK']  # ETFs représentant différentes classes d'actifs
+    
+    # Créer l'optimiseur
+    optimizer = SimpleCFRPortfolio(tickers, learning_rate=0.05, min_weight=0.01)
+    
+    # Récupérer les données
+    start_date = '2019-01-01'
+    end_date = '2024-01-01'
+    data = optimizer.fetch_data(start_date, end_date)
+    
+    # Exécuter le backtest
+    performance = optimizer.backtest()
+    
+    # Sauvegarder les résultats dans un dossier
+    optimizer.save_results()
